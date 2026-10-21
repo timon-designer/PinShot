@@ -7,9 +7,10 @@ struct SettingsView: View {
     @State private var selectedTab: SettingsTab = .shortcuts
 
     enum SettingsTab: String, CaseIterable, Identifiable {
-        case shortcuts = "Shortcuts"
-        case general = "General"
-        case output = "Output"
+        case shortcuts = "快捷键"
+        case general = "通用"
+        case output = "输出"
+        case translation = "翻译"
 
         var id: String { rawValue }
         var icon: String {
@@ -17,6 +18,7 @@ struct SettingsView: View {
             case .shortcuts: return "keyboard"
             case .general: return "gearshape"
             case .output: return "folder"
+            case .translation: return "character.bubble"
             }
         }
     }
@@ -45,34 +47,36 @@ struct SettingsView: View {
                     generalTab
                 case .output:
                     outputTab
+                case .translation:
+                    translationTab
                 }
             }
             .padding(24)
-            .frame(width: 480, height: 320, alignment: .topLeading)
+            .frame(width: 520, height: 420, alignment: .topLeading)
         }
     }
 
-    // MARK: - Shortcuts Tab
+    // MARK: - 快捷键
     private var shortcutsTab: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Keyboard Shortcuts")
+            Text("键盘快捷键")
                 .font(.headline)
 
             VStack(spacing: 12) {
-                // Global Capture Area Shortcut
+                // 全局截图
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Capture Area (Global)")
+                        Text("区域截图（全局）")
                             .font(.system(size: 13, weight: .medium))
-                        Text("Activates fullscreen capture across all monitors")
+                        Text("在所有显示器上启动全屏截取")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
                     Spacer()
                     Picker("", selection: $settingsManager.settings.globalShortcutName) {
-                        Text("⌘⇧A (Command + Shift + A)").tag("⌘⇧A (Command + Shift + A)")
-                        Text("⌥A (Option + A)").tag("⌥A (Option + A)")
-                        Text("⌘⇧1 (Command + Shift + 1)").tag("⌘⇧1 (Command + Shift + 1)")
+                        Text("⌘⇧A").tag("⌘⇧A (Command + Shift + A)")
+                        Text("⌥A").tag("⌥A (Option + A)")
+                        Text("⌘⇧1").tag("⌘⇧1 (Command + Shift + 1)")
                         Text("F1").tag("F1")
                     }
                     .frame(width: 200)
@@ -83,30 +87,30 @@ struct SettingsView: View {
 
                 Divider()
 
-                // In-Overlay Pin Shortcut
+                // 贴图快捷键
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Pin Selected Area")
+                        Text("将选中区域固定到屏幕")
                             .font(.system(size: 13, weight: .medium))
-                        Text("Turns selection into a floating pinned window")
+                        Text("把当前选区变成可悬浮拖拽的贴图")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
                     Spacer()
                     Picker("", selection: $settingsManager.settings.pinShortcutName) {
-                        Text("⌘P or P").tag("⌘P / P")
-                        Text("⌘P only").tag("⌘P")
-                        Text("P only").tag("P")
+                        Text("⌘P 或 P").tag("⌘P / P")
+                        Text("仅 ⌘P").tag("⌘P")
+                        Text("仅 P").tag("P")
                     }
                     .frame(width: 140)
                 }
 
                 Divider()
 
-                // In-Overlay Copy & Save Shortcuts
+                // 复制 / 保存快捷键
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Copy to Clipboard")
+                        Text("复制到剪贴板")
                             .font(.system(size: 13, weight: .medium))
                     }
                     Spacer()
@@ -120,7 +124,7 @@ struct SettingsView: View {
 
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Save to File")
+                        Text("保存到文件")
                             .font(.system(size: 13, weight: .medium))
                     }
                     Spacer()
@@ -156,25 +160,25 @@ struct SettingsView: View {
         HotKeyService.shared.reloadHotKey()
     }
 
-    // MARK: - General Tab
+    // MARK: - 通用
     private var generalTab: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("General Preferences")
+            Text("通用偏好")
                 .font(.headline)
 
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Pinned Image Glow / Shadow:")
+                        Text("贴图光晕 / 阴影：")
                             .font(.system(size: 13, weight: .medium))
-                        Text("Style of edge aura or drop shadow on pinned screenshots")
+                        Text("贴图边缘的光晕或投影样式")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
                     Spacer()
                     Picker("", selection: $settingsManager.settings.pinShadowStyle) {
                         ForEach(PinShadowStyle.allCases, id: \.self) { style in
-                            Text(style.rawValue).tag(style)
+                            Text(style.displayName).tag(style)
                         }
                     }
                     .frame(width: 190)
@@ -182,9 +186,9 @@ struct SettingsView: View {
 
                 Divider()
 
-                Toggle("Play camera sound effect on capture & pin", isOn: $settingsManager.settings.playSoundEffects)
-                Toggle("Show Loupe magnifier & color picker under cursor", isOn: $settingsManager.settings.showMagnifierLoupe)
-                Toggle("Auto-copy to clipboard immediately upon selection", isOn: $settingsManager.settings.autoCopyToClipboardOnCapture)
+                Toggle("截图与贴图时播放快门音效", isOn: $settingsManager.settings.playSoundEffects)
+                Toggle("鼠标下方显示放大镜与取色器", isOn: $settingsManager.settings.showMagnifierLoupe)
+                Toggle("选好区域后立即自动复制到剪贴板", isOn: $settingsManager.settings.autoCopyToClipboardOnCapture)
             }
             .padding(14)
             .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
@@ -192,15 +196,15 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Output Tab
+    // MARK: - 输出
     private var outputTab: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Output & Storage")
+            Text("输出与存储")
                 .font(.headline)
 
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Text("Default Format:")
+                    Text("默认格式：")
                     Spacer()
                     Picker("", selection: $settingsManager.settings.imageFormat) {
                         ForEach(ImageOutputFormat.allCases, id: \.self) { format in
@@ -213,7 +217,7 @@ struct SettingsView: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Save Directory:")
+                    Text("保存目录：")
                     HStack {
                         Text(settingsManager.settings.saveDirectoryPath)
                             .font(.system(size: 11, design: .monospaced))
@@ -223,7 +227,7 @@ struct SettingsView: View {
                             .background(Color(NSColor.textBackgroundColor))
                             .cornerRadius(6)
 
-                        Button("Choose Folder...") {
+                        Button("选择文件夹…") {
                             chooseDirectory()
                         }
                     }
@@ -247,6 +251,84 @@ struct SettingsView: View {
             }
         }
     }
+
+    // MARK: - 翻译
+    @State private var translationTestResult: String = ""
+
+    private var translationTab: some View {
+        let cfg = $settingsManager.settings.translation
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("翻译（LLM API）")
+                    .font(.headline)
+
+                HStack {
+                    Toggle("在工具栏显示翻译按钮", isOn: cfg.enabled)
+                    if cfg.enabled.wrappedValue && cfg.apiKey.wrappedValue.isEmpty {
+                        Text("⚠️ API Key 未填写").font(.system(size: 11)).foregroundColor(.orange)
+                    }
+                }
+
+                Divider()
+
+                Text("BaseURL（OpenAI 兼容）").font(.subheadline).foregroundColor(.secondary)
+                TextField("https://open.bigmodel.cn/api/paas/v4", text: cfg.baseURL)
+                    .textFieldStyle(.roundedBorder)
+
+                Text("模型名称").font(.subheadline).foregroundColor(.secondary)
+                TextField("glm-4-flash-250414", text: cfg.modelName)
+                    .textFieldStyle(.roundedBorder)
+                Text("速度提示：智谱的 `glm-4-flash` 是浮动别名，实测比带日期的快照版（glm-4-flash-250414）慢 2~3 倍；`glm-4-air` 更快但按量计费。换模型只改这里即可。")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("API Key").font(.subheadline).foregroundColor(.secondary)
+                SecureField("sk-…", text: cfg.apiKey)
+                    .textFieldStyle(.roundedBorder)
+
+                HStack {
+                    Text("目标语言").font(.subheadline).foregroundColor(.secondary)
+                    Spacer()
+                    TextField("简体中文 / English / 日本語 / …", text: cfg.targetLanguage)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 240)
+                }
+
+                Toggle("直接传图给视觉模型（跳过 OCR）", isOn: cfg.isVisionModel)
+                    .help("仅当模型支持图片输入时启用，例如 glm-4v-flash / gpt-4o")
+
+                Text("系统提示词").font(.subheadline).foregroundColor(.secondary)
+                TextEditor(text: cfg.systemPrompt)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(height: 70)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                Text("提示：使用 {{TARGET}} 表示目标语言占位符。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+
+                HStack {
+                    Button("测试连接") {
+                        let c = settingsManager.settings.translation
+                        Task { @MainActor in
+                            do {
+                                let svc = TranslationService()
+                                let msg = try await svc.testConnection(config: c)
+                                translationTestResult = msg
+                            } catch {
+                                translationTestResult = "❌ \(error.localizedDescription)"
+                            }
+                        }
+                    }
+                    if !translationTestResult.isEmpty {
+                        Text(translationTestResult)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+            }
+        }
+    }
 }
 
 @MainActor
@@ -258,7 +340,7 @@ final class SettingsWindowManager {
         if window == nil {
             let hosting = NSHostingController(rootView: SettingsView())
             let win = NSWindow(contentViewController: hosting)
-            win.title = "PinShot Preferences"
+            win.title = "SnipShot 偏好设置"
             win.styleMask = [.titled, .closable]
             win.center()
             win.isReleasedWhenClosed = false

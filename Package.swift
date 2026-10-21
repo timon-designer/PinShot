@@ -22,9 +22,16 @@ let package = Package(
             dependencies: ["PinShotCore"],
             path: "Tests/PinShotCoreTests"
         ),
+        // ObjC 小目标：只为提供 @try/@catch 能力（Swift 语言层面无法捕获 NSException）。
+        // 见 Sources/PSExceptionGuard/include/PSExceptionGuard.h 的注释。
+        .target(
+            name: "PSExceptionGuard",
+            path: "Sources/PSExceptionGuard",
+            publicHeadersPath: "include"
+        ),
         .executableTarget(
             name: "PinShot",
-            dependencies: ["PinShotCore"],
+            dependencies: ["PinShotCore", "PSExceptionGuard"],
             path: "Sources/PinShot"
         )
     ]

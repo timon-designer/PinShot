@@ -39,3 +39,6 @@ DerivedData/
 # Archival
 *.zip
 *.tar.gz
+
+# 验收套件的编译产物（scripts/verify-pin.sh 会在缺失时自动重编）
+scripts/pinstate

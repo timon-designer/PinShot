@@ -353,6 +353,30 @@ final class OverlayCanvasView: NSView {
         NSCursor.crosshair.set()
     }
 
+    // MARK: - Scroll Wheel: adjust current tool stroke width (and selection scale)
+    override func scrollWheel(with event: NSEvent) {
+        // Modifier keys: Option (⌥) = fine step, Shift (⇧) = large step
+        let step: CGFloat
+        if event.modifierFlags.contains(.option) {
+            step = 0.5
+        } else if event.modifierFlags.contains(.shift) {
+            step = 4.0
+        } else {
+            step = 1.0
+        }
+        let direction: CGFloat = event.scrollingDeltaY < 0 ? 1.0 : -1.0  // natural scroll: up = +, down = -
+        // For non-continuous devices (mouse with detents), use integer steps; trackpads give fractional deltas.
+        let rawDelta = abs(event.scrollingDeltaY)
+        let applied = direction * (rawDelta > 4 ? step * (rawDelta / 4).rounded() : step)
+
+        if manager.isAnnotating && manager.activeTool != .select {
+            manager.adjustActiveStrokeWidth(by: applied, minWidth: 1, maxWidth: 48)
+        } else if let selection = manager.currentSelection, !selection.isEmpty {
+            // When not annotating, scroll wheel can resize the selection rectangle around its center.
+            manager.scaleSelection(selection, factor: 1.0 + applied * 0.02, anchor: globalPoint(from: convert(event.locationInWindow, from: nil)))
+        }
+    }
+
     // MARK: - Keyboard shortcuts
     override func keyDown(with event: NSEvent) {
         if manager.handleKeyEvent(event) {
