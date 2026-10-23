@@ -6,6 +6,17 @@ final class OverlayWindowPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+
+    override init(contentRect: NSRect, styleMask style: NSWindow.StyleMask,
+                  backing backingStoreType: NSWindow.BackingStoreType, defer flag: Bool) {
+        // ⚠️ `.nonactivatingPanel` 是「不打扰用户 App」的关键：
+        // 带这个样式 + canBecomeKey=true 时，遮罩可以成为 key window 收键盘，
+        // 但**不会把前台 App 顶下去**（实测：另一个 App 的 isActive 全程保持 YES，
+        // 我们照样收到 keyDown）。没有它，任何 makeKey 都会激活本 App。
+        super.init(contentRect: contentRect, styleMask: style.union(.nonactivatingPanel),
+                   backing: backingStoreType, defer: flag)
+        hidesOnDeactivate = false
+    }
 }
 
 @MainActor
@@ -36,6 +47,23 @@ final class OverlayWindowManager: NSObject, FloatingToolbarDelegate {
     private var toolbarPass = 0
     /// 连续异常重建次数上限控制：异常 → 重建 → 再异常不能变成死循环。
     private var toolbarRecoveryCount = 0
+
+    // MARK: - 焦点交接（修「浮窗截不到 / 浮窗被关闭」）
+    //
+    // 截图必须让本 App 成为 active 才能拿到键盘（遮罩要成 key window）。
+    // 代价是：用户原来的 App 会被 deactivate —— 它的浮动面板只要是
+    // hidesOnDeactivate（NSPanel 的常见默认）就会被系统**立刻藏起来**；
+    // 而本 App 截完图又不把焦点还回去，那些浮窗就一直不恢复。
+    // 于是下一次按快捷键时，冻结帧里就少了这些浮窗（"截不到"），
+    // 用户眼里则是"每按一次快捷键就有浮窗被关掉"。
+    //
+    // 修法：进截图前记住前台 App、出截图时把焦点还回去；
+    // 万一冻结那一刻自己还占着前台，先把焦点还回去、等一等再冻结。
+    /// 上一次「非本 App」的前台应用，用来归还焦点。
+    private var lastExternalFrontApp: NSRunningApplication?
+    /// 本次截图开始时用户的前台应用。
+    private var previousFrontApp: NSRunningApplication?
+    private var didObserveWorkspaceActivation = false
     
     var currentSelection: SelectionRect?
     var annotationDoc = AnnotationDocument()
@@ -58,11 +86,44 @@ final class OverlayWindowManager: NSObject, FloatingToolbarDelegate {
             return
         }
 
-        closeOverlay()
+        // 这里刻意不归还焦点：本次流程马上要自己接管焦点，
+        // 先激活别人再冻结会形成竞态。真正的前后焦点交接在下面显式处理。
+        closeOverlay(restoreFocus: false)
+        observeWorkspaceActivationIfNeeded()
 
-        // 1. Freeze screen frames
+        // 记下「这次该还给谁」：正常是当前前台 App；若前台已经是自己，
+        // 就退回上一次记录的外部 App。
+        let currentFront = NSWorkspace.shared.frontmostApplication
+        previousFrontApp = (currentFront?.bundleIdentifier == Bundle.main.bundleIdentifier)
+            ? lastExternalFrontApp
+            : currentFront
+
+        // 关键前置：冻结帧必须拍到「用户自己的桌面」。
+        // 只有「本 App 真的是前台」时才需要把焦点交回去 —— 现在遮罩走
+        // nonactivating 方案，正常情况下我们从来不会抢前台。
+        if isFrontmostApp, let target = (previousFrontApp ?? lastExternalFrontApp), !target.isTerminated {
+            SnipLog.write("Capture: ⚠️ 自己仍占着前台 → 先归还焦点给 \(target.localizedName ?? "?")，120ms 后再冻结")
+            target.activate(options: [])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                self?.beginCaptureSession()
+            }
+            return
+        }
+        beginCaptureSession()
+    }
+
+    /// 本进程是否真的是「系统层面的前台 App」。
+    /// ⚠️ 不能用 `NSApp.isActive`：nonactivating panel 成为 key window 时
+    /// `isActive` 也会是 true，但前台其实还是用户那个 App。
+    private var isFrontmostApp: Bool {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+    }
+
+    /// 冻结帧 + 开遮罩。从 `startCapture` 抽出来，方便「先归还焦点再冻结」这条异步路径复用。
+    private func beginCaptureSession() {
+        // 1. Freeze screen frames（必须在 NSApp.activate 之前！）
         capturedFrames = CaptureService.shared.captureAllScreens()
-        SnipLog.write("Capture: 冻结帧数 = \(capturedFrames.count)")
+        SnipLog.write("Capture: 冻结帧数 = \(capturedFrames.count) 前台=\(previousFrontApp?.localizedName ?? "-") selfFrontmost=\(isFrontmostApp) 屏幕窗口数=\(Self.onScreenWindowCount())")
         annotationDoc = AnnotationDocument()
         history.reset(with: annotationDoc)
         currentSelection = nil
@@ -73,20 +134,29 @@ final class OverlayWindowManager: NSObject, FloatingToolbarDelegate {
         toolbarRecoveryCount = 0
         toolbarPass = 0
 
-        // 2. 先激活应用，再开遮罩。
-        //    ⚠️ 顺序不能反：窗口只有在应用 active 时才能成为 key window。
-        //    makeKeyAndOrderFront 写在 NSApp.activate 之前是空操作 ——
-        //    遮罩拿不到 key，而本地键盘监听只在应用 active 时收事件，
-        //    结果 T / Esc / ⌘C 全部失灵（表现为「第二次截图按 T 没反应」）。
+        // 2. 开遮罩（⚠️ 刻意**不调用 NSApp.activate**）
+        //
+        //    以前这里写的是 `NSApp.activate(ignoringOtherApps: true)`，
+        //    这是「浮窗被关闭 / 浮窗截不到」的根因：
+        //    强制激活本 App 会把用户正在用的 App 顶成非活跃 ——
+        //      · 那些依赖激活状态的浮动面板/弹出面板（弹窗、面板式工具栏、
+        //        微信独立聊天窗等）会被系统或 App 自己收起 → 用户看到「浮窗被关掉」；
+        //      · 而且截完图焦点也不还回去，这些面板一直不复原，
+        //        下一次截图冻结帧里自然就没有它们 → 用户看到「浮窗截不到」。
+        //
+        //    正确做法（实测于 macOS 27）：遮罩用 `.nonactivatingPanel` +
+        //    canBecomeKey，只 orderFrontRegardless + makeKey。
+        //    这样遮罩照样拿到 key window（本地键盘监听正常工作，Esc/T/P/⌘C 都在），
+        //    但前台 App **全程保持活跃**，一个浮窗都不会被碰。
         registerActivationObserverIfNeeded()
-        NSApp.activate(ignoringOtherApps: true)
 
         // 3. Open overlay window on each display
         for screen in NSScreen.screens {
             let window = createOverlayWindow(for: screen)
             overlayWindows.append(window)
-            window.makeKeyAndOrderFront(nil)
-            SnipLog.write("Capture: 遮罩 window=\(NSStringFromRect(window.frame)) visible=\(window.isVisible) key=\(window.isKeyWindow)")
+            window.orderFrontRegardless()   // 不抢激活，只压在最上层
+            window.makeKey()                // nonactivating panel：拿键盘但不激活 App
+            SnipLog.write("Capture: 遮罩 window=\(NSStringFromRect(window.frame)) visible=\(window.isVisible) key=\(window.isKeyWindow) 前台仍为=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "-")")
         }
 
         // 4. Setup event monitor for guaranteed instant keyboard shortcut handling
@@ -112,6 +182,53 @@ final class OverlayWindowManager: NSObject, FloatingToolbarDelegate {
 
     @objc private func applicationDidBecomeActive() {
         ensureOverlayIsKey()
+    }
+
+    // MARK: - 焦点交接
+
+    /// 持续跟踪「用户自己的工作 App」：只要前台不是本 App 就记下来。
+    /// 有了它，即使某次截图异常退出，下一次也能知道该把焦点还给谁。
+    private func observeWorkspaceActivationIfNeeded() {
+        guard !didObserveWorkspaceActivation else { return }
+        didObserveWorkspaceActivation = true
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(workspaceDidActivateApplication(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
+    }
+
+    @objc private func workspaceDidActivateApplication(_ note: Notification) {
+        guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+        guard app.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
+        lastExternalFrontApp = app
+    }
+
+    /// 把焦点还给用户原来的 App。
+    /// 归还之后，它那些 hidesOnDeactivate 的浮动面板会被系统自动还原 ——
+    /// 这正是「下次截图还能拍到它们」的前提。
+    private func restoreUserFocus() {
+        // 只有当「系统前台真的是我们」时才需要还 —— 走 nonactivating 遮罩时
+        // 前台一直是用户的 App，这里直接返回，绝不去抢。
+        guard isFrontmostApp else { return }
+        guard let target = previousFrontApp ?? lastExternalFrontApp,
+              !target.isTerminated else { return }
+        // 只激活 App 本身，不强行把它所有窗口提上来 —— 保持用户的窗口层级原样。
+        target.activate(options: [])
+        SnipLog.write("Capture: 焦点已归还 → \(target.localizedName ?? "?")")
+    }
+
+    /// 供其它浮窗（翻译面板等）关闭后归还焦点 —— 否则本 App 会一直占着前台，
+    /// 用户 App 的浮动面板也就一直不恢复。
+    func restoreFocusAfterPanelClosed() {
+        restoreUserFocus()
+    }
+
+    /// 冻结帧时刻屏幕上还有多少窗口（诊断用：数字突然变小通常意味着有浮窗被藏了）。
+    private static func onScreenWindowCount() -> Int {
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+        return (list as? [[String: Any]])?.count ?? -1
     }
 
     /// 让遮罩成为 key window —— 遮罩收到键盘的前提。
@@ -210,7 +327,7 @@ final class OverlayWindowManager: NSObject, FloatingToolbarDelegate {
         return false
     }
 
-    func closeOverlay() {
+    func closeOverlay(restoreFocus: Bool = true) {
         removeKeyMonitor()
         for window in overlayWindows {
             window.orderOut(nil)
@@ -220,6 +337,9 @@ final class OverlayWindowManager: NSObject, FloatingToolbarDelegate {
         capturedFrames.removeAll()
         currentSelection = nil
         NSCursor.arrow.set()
+        // 截图结束把前台还给用户 —— 让他的浮动面板自动回来。
+        // 少数路径（保存面板 / 翻译面板要用户继续交互）会传 false 保留焦点。
+        if restoreFocus { restoreUserFocus() }
     }
 
     private func createOverlayWindow(for screen: NSScreen) -> NSWindow {
@@ -444,19 +564,26 @@ final class OverlayWindowManager: NSObject, FloatingToolbarDelegate {
 
     func toolbarDidSelectSave() {
         guard let finalImage = createFinalRenderedImage() else { return }
-        closeOverlay()
+        // 保存面板是本 App 的窗口，需要保持前台；等用户选完路径再归还焦点。
+        closeOverlay(restoreFocus: false)
+        // NSSavePanel 只有在 App 是活跃应用时才能正常交互（遮罩走 nonactivating
+        // 方案后，此时前台还是用户的 App），所以这里必须显式激活一次。
+        // 这正是用户主动选择「保存」的场景，激活是预期行为。
+        NSApp.activate(ignoringOtherApps: true)
 
         let savePanel = NSSavePanel()
         savePanel.allowedContentTypes = [.png]
         savePanel.nameFieldStringValue = "SnipShot_\(Int(Date().timeIntervalSince1970)).png"
 
-        savePanel.begin { response in
-            guard response == .OK, let url = savePanel.url else { return }
-            if let tiff = finalImage.tiffRepresentation,
-               let bitmap = NSBitmapImageRep(data: tiff),
-               let pngData = bitmap.representation(using: .png, properties: [:]) {
-                try? pngData.write(to: url)
+        savePanel.begin { [weak self] response in
+            if response == .OK, let url = savePanel.url {
+                if let tiff = finalImage.tiffRepresentation,
+                   let bitmap = NSBitmapImageRep(data: tiff),
+                   let pngData = bitmap.representation(using: .png, properties: [:]) {
+                    try? pngData.write(to: url)
+                }
             }
+            Task { @MainActor in self?.restoreUserFocus() }
         }
     }
 
@@ -474,7 +601,8 @@ final class OverlayWindowManager: NSObject, FloatingToolbarDelegate {
         // 翻译前直接退出截图模式（遮罩/暗化/鼠标键盘拦截一起消失），
         // 屏幕回到正常亮度，翻译面板作为普通浮窗显示在正常界面上。
         // 截图内容不会丢 —— 缩略图带在翻译面板顶部，可随时复制。
-        closeOverlay()
+        // 这一步保留焦点（面板马上要显示、要能选中文字），翻译面板关闭后再归还。
+        closeOverlay(restoreFocus: false)
 
         TranslationFlow.shared.run(image: finalImage,
                                    config: config,

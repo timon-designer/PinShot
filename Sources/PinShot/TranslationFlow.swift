@@ -234,8 +234,14 @@ final class TranslationResultWindow: NSPanel {
 
     /// 面板被收走时留一行日志，方便以后回归定位。
     override func orderOut(_ sender: Any?) {
-        if isVisible { SnipLog.write("Translate: 面板 orderOut（关闭）") }
+        let wasVisible = isVisible
+        if wasVisible { SnipLog.write("Translate: 面板 orderOut（关闭）") }
         super.orderOut(sender)
+        // 翻译期间焦点一直在本 App 手里（用户要选文字/复制），面板关掉就还回去，
+        // 否则用户 App 的浮动面板会一直被系统藏着 —— 下次截图就拍不到它们。
+        if wasVisible {
+            Task { @MainActor in OverlayWindowManager.shared.restoreFocusAfterPanelClosed() }
+        }
     }
 
     init(state: TranslationResultState) {
